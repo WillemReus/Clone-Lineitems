@@ -1,0 +1,133 @@
+//Exclude once-off payments ("recurringbillingfrequency":null):)
+const OnceOffPayments_included = false;
+
+//Import required libraries
+const hubspot = require('@hubspot/api-client');
+
+exports.main = async (event, callback) => { 
+  //Create a new HubSpot API Client
+  const hubspotClient = new hubspot.Client({
+    accessToken: process.env.PrivateAppDealActions
+  });
+
+  //Retrieving the included inputfields
+  const hs_object_id = event.inputFields['hs_object_id'];  
+  const parent_id = event.inputFields['parent_id'];
+  
+  // get lineitem associations
+  const AssociatedLineItemsParentResults = await hubspotClient.crm.deals.associationsApi.getAll(parent_id, 'line_items')
+  const AssociatedLineItemsParent = AssociatedLineItemsParentResults.results.map(({ toObjectId }) => String(toObjectId))
+  
+  // console.log(JSON.stringify(AssociatedLineItemsParent));
+
+  // define properties to request for each lineitem;
+  const properties = [
+    'name', 
+    'hs_sku', 
+    'description', 
+    'hs_product_type', 
+    'hs_images', 
+    'hs_url', 
+    'price', 
+    'recurringbillingfrequency', 
+    'hs_cost_of_goods_sold', 
+    'hs_recurring_billing_start_date', 
+    'quantity', 
+    'discount', 
+    'hs_discount_percentage', 
+    'hs_created_by_user_id', 
+    'hs_line_item_currency_code', 
+    'hs_external_id', 
+    'hs_position_on_quote', 
+    'hs_product_id', 
+    'hs_term_in_months', 
+    'hs_sync_amount', 
+    'hs_variant_id', 
+    'amount', 
+    'tax' 
+  ];
+
+  /** Uncalled properties
+        createdate       
+        hs_acv
+        hs_all_owner_ids
+        hs_all_team_ids
+        hs_allow_buyer_selected_quantity
+        hs_arr
+        hs_billing_start_delay_days
+        hs_billing_start_delay_months
+        hs_billing_start_delay_type
+		hs_createdate        
+        hs_lastmodifieddate      
+        hs_margin
+        hs_margin_acv
+        hs_margin_arr
+        hs_margin_mrr
+        hs_margin_tcv
+        hs_mrr
+        hs_pre_discount_amount
+        hs_read_only
+        hs_recurring_billing_end_date
+        hs_recurring_billing_number_of_payments
+        hs_recurring_billing_start_date
+        hs_recurring_billing_period
+        hs_recurring_billing_terms
+        hs_tcv
+        hs_total_discount
+        hs_unique_creation_key
+        hs_updated_by_user_id
+        hubspot_owner_assigneddate
+        hubspot_owner_id
+        hubspot_team_id 
+  **/   
+
+  try {
+    // Make request per lineitem
+    const promises = AssociatedLineItemsParent.map(async (id) => {
+      const apiResponse = await hubspotClient.crm.lineItems.basicApi.getById(id, properties);
+      const apiProperties = apiResponse.properties
+      delete apiProperties.createdate // new lineitem will have new create date
+      delete apiProperties.hs_lastmodifieddate // non required
+      delete apiProperties.hs_object_id  // passing object ID throws error: new lineitem will have autocreated object ID
+      return apiProperties
+    })
+    
+	const responses = await Promise.all(promises)
+    
+	// Filter out unwanted objects based on 'OneOffPayments_included'
+    const filteredResponses = OnceOffPayments_included
+      // if true, do not filter out OneOffPayments
+      ? responses
+      // if false, only return
+      : responses.filter(response => response.recurringbillingfrequency !== null);
+       
+    const inputs = filteredResponses.map(response => {
+      return {
+        properties: response
+      }
+    })
+    
+    const apiResponse = await hubspotClient.crm.lineItems.batchApi.create({ inputs: inputs });
+
+    // Create lineitem associations to the deal.
+    const associationInputs = apiResponse.results.map(response => ({
+      _from: { id: hs_object_id },  // object ID of the enrolled deal that we are going to associate the lineitems to
+      to: { id: response.id },
+      type: 'deal_to_line_item'
+    }))
+    await hubspotClient.crm.associations.batchApi.create("Deals", "Line_items", { inputs: associationInputs });
+
+
+  } catch (e) {
+    e.message === 'HTTP request failed'
+      ? console.error(JSON.stringify(e.response, null, 2))
+      : console.error(e)
+  }
+ 
+  // Pass information back as a data output to use as a data input with Copy to Property workflow action.
+  callback({ 
+    outputFields: {
+		// Should output fields be required: pass them here.
+    }
+  }); // end callback  
+}
